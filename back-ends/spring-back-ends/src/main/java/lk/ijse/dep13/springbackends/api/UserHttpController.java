@@ -1,16 +1,20 @@
 package lk.ijse.dep13.springbackends.api;
 
+import jakarta.servlet.http.Part;
 import lk.ijse.dep13.springbackends.entity.User;
-import org.apache.commons.codec.cli.Digest;
 import org.apache.commons.codec.digest.DigestUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.io.IOException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.Base64;
+import java.util.Objects;
 
 @RestController
 @RequestMapping("/users")
@@ -45,21 +49,59 @@ public class UserHttpController {
     }
 
     @GetMapping("/me")
-    public String getUserInfo(){
-        return "Get authenticated user information";
+    public User getUserInfo(@SessionAttribute(value = "user") String email ) throws SQLException {
+        try(var stm = connection.prepareStatement("SELECT * FROM \"user\" WHERE email=?")){
+            stm.setString(1, email);
+            ResultSet rst = stm.executeQuery();
+            rst.next();
+            return new User(rst.getString("full_name"),
+                    email,
+                    rst.getString("password"),
+                    Objects.requireNonNullElse(rst.getString("profile_picture"),User.DEFAULT_PROFILE_PICTURE) );
+
+        }
     }
 
-    @ResponseStatus(HttpStatus.NO_CONTENT)
     @PatchMapping("/me")
-    public String updateUser(){
-        return "Update authenticated user information";
+    public User updateUser(@SessionAttribute(value = "user") String email,
+                           @RequestPart("fullName") String fullName,
+                           @RequestPart(value = "profilePicture", required = false) Part profilePicture,
+                           @RequestPart(value = "password", required = false) String password) throws SQLException, IOException {
+        try (var stm = connection
+                .prepareStatement("UPDATE \"user\" SET full_name=?, profile_picture=?, password=? WHERE email=?");
+             var stm2 = connection.prepareStatement("SELECT password FROM \"user\" WHERE email=?")) {
+            stm2.setString(1, email);
+            ResultSet rst = stm2.executeQuery();
+            rst.next();
+            String encryptedPassword = password != null ? DigestUtils.sha256Hex(password):
+                    rst.getString("password");
+            String base64DataUrl = profilePicture != null ? generateBase64DataUrl(profilePicture) : null;
+            stm.setString(1, fullName);
+            stm.setString(2, base64DataUrl);
+            stm.setString(3, encryptedPassword);
+            stm.setString(4, email);
+            stm.executeUpdate();
+            return new User(fullName, email, encryptedPassword,
+                    Objects.requireNonNullElse(base64DataUrl, User.DEFAULT_PROFILE_PICTURE));
+        }
     }
 
     @ResponseStatus(HttpStatus.NO_CONTENT)
     @DeleteMapping("/me")
-    public String deleteUser(){
-        return "Delete authenticated user account";
+    public void deleteUser(@SessionAttribute(value = "user") String email) throws SQLException {
+        try(PreparedStatement stm = connection.prepareStatement("DELETE FROM \"user\" WHERE email=?")){
+            stm.setString(1, email);
+            stm.executeUpdate();
+        }
+    }
+
+    private String generateBase64DataUrl(Part part) throws IOException {
+        byte[] bytes = part.getInputStream().readAllBytes();
+        String mimeType = part.getContentType();
+        String base64Data = Base64.getEncoder().encodeToString(bytes);
+        return "data:" + mimeType + ";base64," + base64Data;
     }
 
 
 }
+
